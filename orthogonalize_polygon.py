@@ -3,8 +3,8 @@
     Author: Martin Machyna
     Email: machyna@gmail.com
     Date created: 9/28/2020
-    Date last modified: 9/28/2020
-    Version: 1.0.0
+    Date last modified: 9/30/2020
+    Version: 1.0.1
     License: GPLv3
     credits: Jérôme Renard [calculate_initial_compass_bearing(): https://gist.github.com/jeromer/2005586] 
              JOSM project  [general idea: https://github.com/openstreetmap/josm/blob/6890fb0715ab22734b72be86537e33d5c4021c5d/src/org/openstreetmap/josm/actions/OrthogonalizeAction.java#L334]
@@ -15,6 +15,7 @@
              Fiona==1.8.13.post1
              numpy==1.19.1
              pyproj==2.6.1.post1
+    Changelog: 1.0.1 - Added constraint that in order to make the next segment continue in the same direction as the previous segment, it can not deviate from that direction more than +/- 20 degrees.
 '''
 
 import geopandas as gpd
@@ -70,21 +71,27 @@ def calculate_initial_compass_bearing(pointA, pointB):
     
 
 
-def calculate_segment_angles(polySimple):
+def calculate_segment_angles(polySimple, maxAngleChange = 45):
     """
     Calculates angles of all polygon segments to cardinal directions.
 
     :Parameters:
       - `polySimple: shapely polygon object containing simplified building.
+      - `maxAngleChange: angle (0,45> degrees. Sets the maximum angle when 
+                         the segment is still considered to continue in the 
+                         same direction as the previous segment.
 
     :Returns:
       - orgAngle: Segments bearing
       - corAngle: Segments angles to closest cardinal direction
-      - dirAngle: Segments direction [N, E, S ,W] as [0, 1, 2, 3]
+      - dirAngle: Segments direction [N, E, S, W] as [0, 1, 2, 3]
 
     :Returns Type:
       list
     """
+    # Convert limit angle to angle for subtraction
+    maxAngleChange = 45 - maxAngleChange
+
     # Get points Lat/Lon
     simpleX = polySimple.exterior.xy[0]
     simpleY = polySimple.exterior.xy[1]
@@ -93,36 +100,43 @@ def calculate_segment_angles(polySimple):
     orgAngle = [] # Original angles
     corAngle = [] # Correction angles used for rotation
     dirAngle = [] # 0,1,2,3 = N,E,S,W
+    limit = [0] * 4
 
     for i in range(0, (len(simpleX) - 1)):
         point1 = (simpleY[i], simpleX[i])
         point2 = (simpleY[i+1], simpleX[i+1])
         angle = calculate_initial_compass_bearing(point1, point2)
 
-        if angle > 45 and angle <= 135:
+        if angle > (45 + limit[1]) and angle <= (135 - limit[1]):
             orgAngle.append(angle)
             corAngle.append(angle - 90)
             dirAngle.append(1)
 
-        elif angle > 135 and angle <= 225:
+        elif angle > (135 + limit[2]) and angle <= (225 - limit[2]):
             orgAngle.append(angle)
             corAngle.append(angle - 180)
             dirAngle.append(2)
 
-        elif angle > 225 and angle <= 315:
+        elif angle > (225 + limit[3]) and angle <= (315 - limit[3]):
             orgAngle.append(angle)
             corAngle.append(angle - 270)
             dirAngle.append(3)
 
-        elif angle > 315 and angle <= 360:
+        elif angle > (315 + limit[0]) and angle <= 360:
             orgAngle.append(angle)
             corAngle.append(angle - 360)
             dirAngle.append(0)
 
-        else:
+        elif angle >= 0 and angle <= (45 - limit[0]):
             orgAngle.append(angle)
             corAngle.append(angle)
             dirAngle.append(0)
+
+
+        limit = [0] * 4
+        limit[ dirAngle[i] ] = maxAngleChange               # Set angle limit for the current direction
+        limit[ (dirAngle[i] + 1) % 4 ] = -maxAngleChange    # Extend the angles for the adjacent directions
+        limit[ (dirAngle[i] - 1) % 4 ] = -maxAngleChange
 
     return orgAngle, corAngle, dirAngle
 
@@ -189,7 +203,7 @@ def orthogonalize_polygon(polySimple):
     polySimpleR = rotate_polygon(polySimple, medAngle)
 
     # Get directions of rotated polygon segments
-    orgAngle, corAngle, dirAngle = calculate_segment_angles(polySimpleR)
+    orgAngle, corAngle, dirAngle = calculate_segment_angles(polySimpleR, 20)
 
     # Get Lat/Lon of rotated polygon points
     rotatedX = polySimpleR.exterior.xy[0].tolist()
@@ -228,7 +242,7 @@ def orthogonalize_polygon(polySimple):
             # Update with new coordinates
             rotatedY[ segmentBuffer[0]:segmentBuffer[-1]+2 ] = [tempY] * (len(segmentBuffer) + 1)
         
-        if 0 in segmentBuffer:  # Copy change in first point to its to last point so we don't lose it during Reverse shift
+        if 0 in segmentBuffer:  # Copy change in first point to its last point so we don't lose it during Reverse shift
             rotatedX[-1] = rotatedX[0]
             rotatedY[-1] = rotatedY[0]
         
