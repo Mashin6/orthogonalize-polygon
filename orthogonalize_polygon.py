@@ -80,7 +80,7 @@ def calculate_segment_angles(polySimple):
     :Returns:
       - orgAngle: Segments bearing
       - corAngle: Segments angles to closest cardinal direction
-      - dirAngle: Segments direction [N, W, S ,E] as [0, 1, 2, 3]
+      - dirAngle: Segments direction [N, E, S ,W] as [0, 1, 2, 3]
 
     :Returns Type:
       list
@@ -195,7 +195,7 @@ def orthogonalize_polygon(polySimple):
     rotatedX = polySimpleR.exterior.xy[0].tolist()
     rotatedY = polySimpleR.exterior.xy[1].tolist()
 
-    # Scan bakwards to check if starting segment is a continuation of straight region in the same direction
+    # Scan backwards to check if starting segment is a continuation of straight region in the same direction
     shift = 0
     for i in range(1, len(dirAngle)):
         if dirAngle[0] == dirAngle[-i]:
