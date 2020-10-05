@@ -253,6 +253,9 @@ def orthogonalize_polygon(polySimple):
     if shift != 0:
         rotatedX = rotatedX[shift:] + rotatedX[1:shift+1]    # First and last points are the same in closed polygons
         rotatedY = rotatedY[shift:] + rotatedY[1:shift+1]
+    else:
+        rotatedX[0] = rotatedX[-1]    # Copy updated coordinates to first node
+        rotatedY[0] = rotatedY[-1]
     
     # Create polygon from new points
     polyNew = Polygon(zip(rotatedX, rotatedY))
