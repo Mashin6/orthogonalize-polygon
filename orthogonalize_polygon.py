@@ -4,7 +4,7 @@
     Email: machyna@gmail.com
     Date created: 9/28/2020
     Date last modified: 9/30/2020
-    Version: 1.0.3
+    Version: 1.0.4
     License: GPLv3
     credits: Jérôme Renard [calculate_initial_compass_bearing(): https://gist.github.com/jeromer/2005586] 
              JOSM project  [general idea: https://github.com/openstreetmap/josm/blob/6890fb0715ab22734b72be86537e33d5c4021c5d/src/org/openstreetmap/josm/actions/OrthogonalizeAction.java#L334]
