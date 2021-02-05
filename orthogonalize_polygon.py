@@ -4,18 +4,22 @@
     Email: machyna@gmail.com
     Date created: 9/28/2020
     Date last modified: 9/30/2020
-    Version: 1.0.1
+    Version: 1.0.3
     License: GPLv3
     credits: Jérôme Renard [calculate_initial_compass_bearing(): https://gist.github.com/jeromer/2005586] 
              JOSM project  [general idea: https://github.com/openstreetmap/josm/blob/6890fb0715ab22734b72be86537e33d5c4021c5d/src/org/openstreetmap/josm/actions/OrthogonalizeAction.java#L334]
     Python Version: Python 3.8.5 
-    Modules: geopandas==0.8.1
-             pandas==1.1.1
+    Modules: geopandas==0.8.2
+             pandas==1.2.1
              Shapely==1.7.1
-             Fiona==1.8.13.post1
-             numpy==1.19.1
-             pyproj==2.6.1.post1
+             Fiona==1.8.18
+             numpy==1.19.5
+             pyproj==3.0.0.post1
     Changelog: 1.0.1 - Added constraint that in order to make the next segment continue in the same direction as the previous segment, it can not deviate from that direction more than +/- 20 degrees.
+               1.0.2 - Fix cases when building is at ~45˚ angle to cardinal directions
+                     - Added improvement when 180˚ turns are present the builing shape
+               1.0.3 - Leave sides of polygon that are meant to be skewed untouched
+               1.0.4 - Add orthogonalization for inner polygon rings (holes)
 '''
 
 import geopandas as gpd
@@ -23,6 +27,7 @@ import pandas as pd
 import shapely
 from shapely import speedups
 from shapely.geometry import Polygon
+from shapely.geometry import MultiPolygon
 import math
 import statistics
 speedups.enable()
@@ -77,9 +82,10 @@ def calculate_segment_angles(polySimple, maxAngleChange = 45):
 
     :Parameters:
       - `polySimple: shapely polygon object containing simplified building.
-      - `maxAngleChange: angle (0,45> degrees. Sets the maximum angle when 
-                         the segment is still considered to continue in the 
-                         same direction as the previous segment.
+      - `maxAngleChange: angle (0,45> degrees. Sets the maximum angle deviation
+                         from the cardinal direction for the segment to be still 
+                         considered to continue in the same direction as the 
+                         previous segment.
 
     :Returns:
       - orgAngle: Segments bearing
@@ -172,19 +178,27 @@ def rotate_polygon(polySimple, angle):
     return bSR
 
 
-def orthogonalize_polygon(polySimple):
+def orthogonalize_polygon(polygon, maxAngleChange = 15, skewTolerance = 15):
     """
-    Master function that makes all angles in polygon 90 or 180 degrees.
+    Master function that makes all angles in polygon outer and inner rings either 90 or 180 degrees.
     Idea adapted from JOSM function orthogonalize
     1) Calculate bearing [0-360 deg] of each polygon segment
-    2) From bearing determine general direction [N, E, S ,W] and calculate angle from nearest cardinal direction for each segment
-    3) Rotate polygon by median angle (mean migth be better for polygons with few segments) to align segments with xy coord axes
-    4) For vertical segments replace X coordinates of the points with their mean value
-       For horizontal segments replace Y coordinates of the points with their mean value
+    2) From bearing determine general direction [N, E, S ,W] and calculate angle deviation from nearest cardinal direction for each segment
+    3) Rotate polygon by median deviation angle to align segments with xy coord axes (cardinal directions)
+    4) For vertical segments replace X coordinates of their points with mean value
+       For horizontal segments replace Y coordinates of their points with mean value
     5) Rotate back
 
     :Parameters:
-      - `polySimple: shapely polygon object containing simplified building.
+      - `polygon: shapely polygon object containing simplified building.
+      - `maxAngleChange: angle (0,45> degrees. Sets the maximum angle deviation
+                         from the cardinal direction for the segment to be still 
+                         considered to continue in the same direction as the 
+                         previous segment.
+      - `skewTolerance: angle <0,45> degrees. Sets skew tolerance for segments that 
+                        are at 45˚±Tolerance angle from the overal rectangular shape 
+                        of the polygon. Usefull when preserving e.g. baywindows on a 
+                        house.
 
     :Returns:
       - polyOrthog: orthogonalized shapely polygon where all angles are 90 or 180 degrees
@@ -192,95 +206,137 @@ def orthogonalize_polygon(polySimple):
     :Returns Type:
       shapely polygon
     """
-    # Get angles from cardinal directions of all segments
-    orgAngle, corAngle, dirAngle = calculate_segment_angles(polySimple)
+    # Check if polygon has inner rings that we want to orthogonalize as well
+    rings = [ Polygon(polygon.exterior) ]
+    for inner in list(polygon.interiors):
+        rings.append(Polygon(inner))
 
-    # Calculate median angle that will be used for rotation
-    medAngle = statistics.median(corAngle)
-    #avAngle = statistics.mean(corAngle)
 
-    # Rotate polygon to align its edges to cardinal directions
-    polySimpleR = rotate_polygon(polySimple, medAngle)
+    polyOrthog = [] 
+    for polySimple in rings:
 
-    # Get directions of rotated polygon segments
-    orgAngle, corAngle, dirAngle = calculate_segment_angles(polySimpleR, 20)
+        # Get angles from cardinal directions of all segments
+        orgAngle, corAngle, dirAngle = calculate_segment_angles(polySimple)
 
-    # Get Lat/Lon of rotated polygon points
-    rotatedX = polySimpleR.exterior.xy[0].tolist()
-    rotatedY = polySimpleR.exterior.xy[1].tolist()
-
-    # Scan backwards to check if starting segment is a continuation of straight region in the same direction
-    shift = 0
-    for i in range(1, len(dirAngle)):
-        if dirAngle[0] == dirAngle[-i]:
-            shift = i
+        # Calculate median angle that will be used for rotation
+        if statistics.stdev(corAngle) < 30:
+            medAngle = statistics.median(corAngle)
+            #avAngle = statistics.mean(corAngle)
         else:
-            break
-    # If the first segment is part of continuing straight region then reset the index to it's beginning
-    if shift != 0:
-        dirAngle  = dirAngle[-shift:] + dirAngle[:-shift]
-        rotatedX = rotatedX[-shift-1:-1] + rotatedX[:-shift]    # First and last points are the same in closed polygons
-        rotatedY = rotatedY[-shift-1:-1] + rotatedY[:-shift]
+            medAngle = 45  # Account for cases when building is at ~45˚ and we can't decide if to turn clockwise or anti-clockwise
 
-    # Cycle through all segments
-    # Adjust points coodinates by taking the average of points in segment
-    dirAngle.append(dirAngle[0]) # Append dummy value
-    segmentBuffer = []
+        # Rotate polygon to align its edges to cardinal directions
+        polySimpleR = rotate_polygon(polySimple, medAngle)
 
-    for i in range(0, len(dirAngle) - 1):
-        segmentBuffer.append(i) 
+        # Get directions of rotated polygon segments
+        orgAngle, corAngle, dirAngle = calculate_segment_angles(polySimpleR, maxAngleChange)
 
-        if dirAngle[i] == dirAngle[i + 1]: # If next segment is of same orientation, we need 180 deg angle for straight line. Keep checking.
-            continue
+        # Get Lat/Lon of rotated polygon points
+        rotatedX = polySimpleR.exterior.xy[0].tolist()
+        rotatedY = polySimpleR.exterior.xy[1].tolist()
 
-        if dirAngle[i] in {0, 2}:   # for N,S segments avereage x coordinate
-            tempX = statistics.mean( rotatedX[ segmentBuffer[0]:segmentBuffer[-1]+2 ] )
-            # Update with new coordinates
-            rotatedX[ segmentBuffer[0]:segmentBuffer[-1]+2 ] = [tempX] * (len(segmentBuffer) + 1)  # Segment has 2 points therefore +1
-        elif dirAngle[i] in {1, 3}:  # for E,W segments avereage y coordinate 
-            tempY = statistics.mean( rotatedY[ segmentBuffer[0]:segmentBuffer[-1]+2 ] )
-            # Update with new coordinates
-            rotatedY[ segmentBuffer[0]:segmentBuffer[-1]+2 ] = [tempY] * (len(segmentBuffer) + 1)
+        # Scan backwards to check if starting segment is a continuation of straight region in the same direction
+        shift = 0
+        for i in range(1, len(dirAngle)):
+            if dirAngle[0] == dirAngle[-i]:
+                shift = i
+            else:
+                break
+        # If the first segment is part of continuing straight region then reset the index to it's beginning
+        if shift != 0:
+            dirAngle  = dirAngle[-shift:] + dirAngle[:-shift]
+            orgAngle  = orgAngle[-shift:] + orgAngle[:-shift]
+            rotatedX = rotatedX[-shift-1:-1] + rotatedX[:-shift]    # First and last points are the same in closed polygons
+            rotatedY = rotatedY[-shift-1:-1] + rotatedY[:-shift]
+
+        # Fix 180 degree turns (N->S, S->N, E->W, W->E)
+        # Subtract two adjacent direction and if the difference is 2 (0,1,3 are OK) then use the direction of the previous segment
+        dirAngleRoll = dirAngle[1:] + dirAngle[0:1]
+        dirAngle = [ dirAngle[i-1] if abs(dirAngle[i]-dirAngleRoll[i])==2 else dirAngle[i] for i in range(len(dirAngle)) ]
+
+        # Cycle through all segments
+        # Adjust points coodinates by taking the average of points in segment
+        dirAngle.append(dirAngle[0]) # Append dummy value
+        orgAngle.append(orgAngle[0]) # Append dummy value
+        segmentBuffer = [] # Buffer for determining which segments are part of one large straight line 
+
+        for i in range(0, len(dirAngle) - 1):
+            # Preserving skewed walls: Leave walls that are obviously meant to be skewed 45˚+/-15˚ (angle 30-60 degrees) of main walls as untouched
+            if orgAngle[i] % 90 > (45 - skewTolerance) and orgAngle[i] % 90 < (45 + skewTolerance):
+                continue
+
+            # Dealing with sharp 180˚ turns
+            segmentBuffer.append(i) 
+            if dirAngle[i] == dirAngle[i + 1]: # If next segment is of same orientation, we need 180 deg angle for straight line. Keep checking.
+                if orgAngle[i + 1] % 90 > (45 - skewTolerance) and orgAngle[i + 1] % 90 < (45 + skewTolerance):
+                    pass
+                else:
+                    continue
+
+            if dirAngle[i] in {0, 2}:   # for N,S segments avereage x coordinate
+                tempX = statistics.mean( rotatedX[ segmentBuffer[0]:segmentBuffer[-1]+2 ] )
+                # Update with new coordinates
+                rotatedX[ segmentBuffer[0]:segmentBuffer[-1]+2 ] = [tempX] * (len(segmentBuffer) + 1)  # Segment has 2 points therefore +1
+            elif dirAngle[i] in {1, 3}:  # for E,W segments avereage y coordinate 
+                tempY = statistics.mean( rotatedY[ segmentBuffer[0]:segmentBuffer[-1]+2 ] )
+                # Update with new coordinates
+                rotatedY[ segmentBuffer[0]:segmentBuffer[-1]+2 ] = [tempY] * (len(segmentBuffer) + 1)
+            
+            if 0 in segmentBuffer:  # Copy change in first point to its last point so we don't lose it during Reverse shift
+                rotatedX[-1] = rotatedX[0]
+                rotatedY[-1] = rotatedY[0]
+            
+            segmentBuffer = []
         
-        if 0 in segmentBuffer:  # Copy change in first point to its last point so we don't lose it during Reverse shift
-            rotatedX[-1] = rotatedX[0]
-            rotatedY[-1] = rotatedY[0]
-        
-        segmentBuffer = []
-    
 
-    # Reverse shift so we get polygon with the same start/end point as before
-    if shift != 0:
-        rotatedX = rotatedX[shift:] + rotatedX[1:shift+1]    # First and last points are the same in closed polygons
-        rotatedY = rotatedY[shift:] + rotatedY[1:shift+1]
-    else:
-        rotatedX[0] = rotatedX[-1]    # Copy updated coordinates to first node
-        rotatedY[0] = rotatedY[-1]
-    
-    # Create polygon from new points
-    polyNew = Polygon(zip(rotatedX, rotatedY))
-    
-    # Rotate polygon back
-    polyOrthog = rotate_polygon(polyNew, -medAngle)
-    
+        # Reverse shift so we get polygon with the same start/end point as before
+        if shift != 0:
+            rotatedX = rotatedX[shift:] + rotatedX[1:shift+1]    # First and last points are the same in closed polygons
+            rotatedY = rotatedY[shift:] + rotatedY[1:shift+1]
+        else:
+            rotatedX[0] = rotatedX[-1]    # Copy updated coordinates to first node
+            rotatedY[0] = rotatedY[-1]
+
+        # Create polygon from new points
+        polyNew = Polygon(zip(rotatedX, rotatedY))
+        
+        # Rotate polygon back
+        polyNew = rotate_polygon(polyNew, -medAngle)
+        
+        # Add to list of finihed rings
+        polyOrthog.append(polyNew)
+
+    # Recreate the original object
+    polyOrthog = Polygon(polyOrthog[0].exterior, [inner.exterior for inner in polyOrthog[1:]])
     return polyOrthog
 
 
 
 ## Main part
 
-## Simplify and orthogonalize buildings
+## Orthogonalize buildings
 buildings = gpd.read_file('inFile.geojson')
+buildings.crs = "EPSG:4326"
 
 for i in range(0, len(buildings)):
     build = buildings.loc[i, 'geometry']
 
-    # Simplify building
-    buildSimple = build.simplify(0.000005, preserve_topology=True)
+    if build.type == 'MultiPolygon': # Multipolygons
+        multipolygon = []
 
-    # Orthogonalize
-    buildOrtho = orthogonalize_polygon(buildSimple)
-    buildings.loc[i, 'geometry'] = buildOrtho
+        for poly in build:
+            buildOrtho = orthogonalize_polygon(poly)
+            multipolygon.append(buildOrtho)
+
+        buildings.loc[i, 'geometry'] = gpd.GeoSeries(MultiPolygon(multipolygon)).values # Workaround for Pandas/Geopandas bug
+        # buildings.loc[i, 'geometry'] = MultiPolygon(multipolygon)   # Does not work
+    
+    else:    # Polygons
+        
+        buildOrtho = orthogonalize_polygon(build)
+              
+        buildings.loc[i, 'geometry'] = buildOrtho
+
 
 buildings.to_file('outFile.geojson', driver='GeoJSON')
 
