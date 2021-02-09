@@ -161,7 +161,7 @@ def rotate_polygon(polySimple, angle):
       - bSR: rotated polygon
 
     :Returns Type:
-      shapely polygon
+      shapely Polygon
     """
     # Create WGS84 referenced GeoSeries
     bS = gpd.GeoDataFrame({'geometry':[polySimple]})
@@ -183,7 +183,7 @@ def orthogonalize_polygon(polygon, maxAngleChange = 15, skewTolerance = 15):
     Master function that makes all angles in polygon outer and inner rings either 90 or 180 degrees.
     Idea adapted from JOSM function orthogonalize
     1) Calculate bearing [0-360 deg] of each polygon segment
-    2) From bearing determine general direction [N, E, S ,W] and calculate angle deviation from nearest cardinal direction for each segment
+    2) From bearing determine general direction [N, E, S ,W], then calculate angle deviation from nearest cardinal direction for each segment
     3) Rotate polygon by median deviation angle to align segments with xy coord axes (cardinal directions)
     4) For vertical segments replace X coordinates of their points with mean value
        For horizontal segments replace Y coordinates of their points with mean value
@@ -197,14 +197,14 @@ def orthogonalize_polygon(polygon, maxAngleChange = 15, skewTolerance = 15):
                          previous segment.
       - `skewTolerance: angle <0,45> degrees. Sets skew tolerance for segments that 
                         are at 45˚±Tolerance angle from the overal rectangular shape 
-                        of the polygon. Usefull when preserving e.g. baywindows on a 
+                        of the polygon. Usefull when preserving e.g. bay windows on a 
                         house.
 
     :Returns:
       - polyOrthog: orthogonalized shapely polygon where all angles are 90 or 180 degrees
 
     :Returns Type:
-      shapely polygon
+      shapely Polygon
     """
     # Check if polygon has inner rings that we want to orthogonalize as well
     rings = [ Polygon(polygon.exterior) ]
@@ -242,7 +242,7 @@ def orthogonalize_polygon(polygon, maxAngleChange = 15, skewTolerance = 15):
                 shift = i
             else:
                 break
-        # If the first segment is part of continuing straight region then reset the index to it's beginning
+        # If the first segment is part of continuing straight region then reset the index to its beginning
         if shift != 0:
             dirAngle  = dirAngle[-shift:] + dirAngle[:-shift]
             orgAngle  = orgAngle[-shift:] + orgAngle[:-shift]
@@ -250,7 +250,7 @@ def orthogonalize_polygon(polygon, maxAngleChange = 15, skewTolerance = 15):
             rotatedY = rotatedY[-shift-1:-1] + rotatedY[:-shift]
 
         # Fix 180 degree turns (N->S, S->N, E->W, W->E)
-        # Subtract two adjacent direction and if the difference is 2 (0,1,3 are OK) then use the direction of the previous segment
+        # Subtract two adjacent directions and if the difference is 2, which means we have 180˚ turn (0,1,3 are OK) then use the direction of the previous segment
         dirAngleRoll = dirAngle[1:] + dirAngle[0:1]
         dirAngle = [ dirAngle[i-1] if abs(dirAngle[i]-dirAngleRoll[i])==2 else dirAngle[i] for i in range(len(dirAngle)) ]
 
@@ -261,11 +261,11 @@ def orthogonalize_polygon(polygon, maxAngleChange = 15, skewTolerance = 15):
         segmentBuffer = [] # Buffer for determining which segments are part of one large straight line 
 
         for i in range(0, len(dirAngle) - 1):
-            # Preserving skewed walls: Leave walls that are obviously meant to be skewed 45˚+/-15˚ (angle 30-60 degrees) of main walls as untouched
+            # Preserving skewed walls: Leave walls that are obviously meant to be skewed 45˚+/- tolerance˚ (e.g.angle 30-60 degrees) off main walls as untouched
             if orgAngle[i] % 90 > (45 - skewTolerance) and orgAngle[i] % 90 < (45 + skewTolerance):
                 continue
 
-            # Dealing with sharp 180˚ turns
+            # Dealing with adjacent segments following the same direction
             segmentBuffer.append(i) 
             if dirAngle[i] == dirAngle[i + 1]: # If next segment is of same orientation, we need 180 deg angle for straight line. Keep checking.
                 if orgAngle[i + 1] % 90 > (45 - skewTolerance) and orgAngle[i + 1] % 90 < (45 + skewTolerance):
